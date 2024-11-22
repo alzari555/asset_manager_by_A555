@@ -1,9 +1,11 @@
 schema_version = "1.0.0"
-id = "asset_manager_by_zield"
-version = "0.1.3-alpha"
-name = "Asset Manager by Zield"
-tagline = "Este addon permite tres formas de cargar assets: normalmente (carga el objeto 3D tal como se guardó), por material (aplica el material del asset a los objetos seleccionados) y por geometry nodes (aplica los geometry nodes del asset a los objetos seleccionados). Además, puede cargar solo la malla sin materiales ni modificadores. Otras funciones incluyen guardar assets y renombrarlos para un acceso fácil en una lista."
-maintainer = "Zield555"
+id = "asset_manager_by_alzari"
+version = "0.2.0"
+name = "Asset Manager by alzari"
+
+tagline = """Gestor de assets con múltiples modos de carga: normal, por material o por geometry nodes. Permite cargar solo la malla, guardar assets y organizarlos fácilmente."""
+
+maintainer = "www.github.com/alzari555"
 type = "add-on"
 blender_version_min = "4.3.0"
 license = ["SPDX:GPL-2.0-or-later"]
