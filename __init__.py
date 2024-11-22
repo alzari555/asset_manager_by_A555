@@ -342,42 +342,30 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
 
         try:
             for i, asset in enumerate(selected_assets):
-                # Primero leemos las posiciones originales
-                original_positions = {}
-                with bpy.data.libraries.load(asset.filepath) as (data_from, _):
-                    # Crear una biblioteca temporal para leer las posiciones
-                    with bpy.data.libraries.load(asset.filepath) as (data_from_temp, data_to_temp):
-                        data_to_temp.objects = [name for name in data_from_temp.objects]
-                    
-                    # Obtener las posiciones originales
-                    first_pos = None
-                    for obj in data_to_temp.objects:
-                        if obj is not None:
-                            if first_pos is None:
-                                first_pos = obj.location.copy()
-                            original_positions[obj.name] = obj.location.copy()
-                    
-                    # Limpiar objetos temporales
-                    for obj in data_to_temp.objects:
-                        if obj is not None:
-                            bpy.data.objects.remove(obj, do_unlink=True)
-
-                # Ahora cargamos los objetos reales
                 with bpy.data.libraries.load(asset.filepath) as (data_from, data_to):
                     data_to.objects = data_from.objects
                     
                     if library_props.load_mode == 'MATERIAL':
                         data_to.materials = data_from.materials
                         data_to.node_groups = [ng for ng in data_from.node_groups 
-                                             if any(mat.use_nodes and mat.node_tree == ng 
+                                             if any(hasattr(mat, 'node_tree') and mat.node_tree == ng 
                                                   for mat in data_from.materials)]
                     
                     elif library_props.load_mode == 'NODES':
                         data_to.node_groups = data_from.node_groups
 
                 loaded_objects = []
+                relative_positions = {}
                 
-                # Vincular y posicionar objetos
+                # Cargar posiciones relativas si existen
+                for obj in data_to.objects:
+                    if obj is not None and "relative_positions" in obj:
+                        try:
+                            relative_positions = eval(obj["relative_positions"])
+                            break
+                        except:
+                            pass
+
                 for obj in data_to.objects:
                     if obj is not None:
                         if library_props.load_mode in {'COLLECTION', 'MESH'}:
@@ -385,11 +373,11 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                             loaded_objects.append(obj)
                             
                             # Aplicar posición según el modo de organización
-                            if library_props.arrange_mode == 'RELATIVE' and obj.name in original_positions:
-                                if first_pos is not None:
-                                    # Calcular y aplicar offset desde el cursor
-                                    offset = original_positions[obj.name] - first_pos
-                                    obj.location = cursor_location + offset
+                            if library_props.arrange_mode == 'RELATIVE' and relative_positions:
+                                if obj.name in relative_positions:
+                                    rel_pos = relative_positions[obj.name]
+                                    if isinstance(rel_pos, Vector):
+                                        obj.location = cursor_location + rel_pos
                             else:  # ROW mode
                                 obj.location = cursor_location + Vector((i * library_props.spacing, 0, 0))
                             
@@ -401,13 +389,25 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                         
                         if library_props.load_mode == 'MATERIAL':
                             for target_obj in context.selected_objects:
-                                if (hasattr(target_obj.data, "materials") and 
-                                    hasattr(obj.data, "materials")):
-                                    if library_props.force_mode or not target_obj.data.materials:
-                                        target_obj.data.materials.clear()
-                                        for mat in obj.data.materials:
-                                            if mat:
-                                                target_obj.data.materials.append(mat)
+                                if hasattr(target_obj.data, "materials"):
+                                    # Limpiar materiales existentes si está en modo forzado
+                                    if library_props.force_mode:
+                                        while len(target_obj.data.materials):
+                                            target_obj.data.materials.pop()
+                                    
+                                    # Agregar nuevos materiales
+                                    for mat in data_to.materials:
+                                        if mat is not None and isinstance(mat, bpy.types.Material):
+                                            # Si el material ya existe en el objeto y no estamos en modo forzado, saltarlo
+                                            if not library_props.force_mode and mat.name in target_obj.data.materials:
+                                                continue
+                                            
+                                            # Asegurarse de que el material use nodos
+                                            if not mat.use_nodes:
+                                                mat.use_nodes = True
+                                            
+                                            # Agregar el material al objeto
+                                            target_obj.data.materials.append(mat)
 
                         if library_props.load_mode == 'NODES':
                             for target_obj in context.selected_objects:
@@ -424,10 +424,10 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                 if library_props.load_mode not in {'COLLECTION', 'MESH'}:
                     for obj in loaded_objects:
                         bpy.data.objects.remove(obj, do_unlink=True)
-            
+
             self.report({'INFO'}, f"Assets cargados correctamente")
             return {'FINISHED'}
-        
+
         except Exception as e:
             self.report({'ERROR'}, f"Error al cargar los assets: {str(e)}")
             return {'CANCELLED'}
