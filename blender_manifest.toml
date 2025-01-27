@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "asset_manager_by_alzari"
-version = "0.2.1"
+version = "0.2.2"
 name = "Asset Manager by alzari"
 
 tagline = """Gestor de assets con múltiples modos de carga: normal, por material o por geometry nodes. Permite cargar solo la malla, guardar assets y organizarlos fácilmente."""

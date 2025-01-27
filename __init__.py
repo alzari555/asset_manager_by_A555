@@ -1,7 +1,5 @@
 import bpy
 import os
-import glob
-import shutil
 from mathutils import Vector
 from bpy.props import (
     StringProperty,
@@ -29,33 +27,12 @@ FILE_EXTENSION = '.blend'
 
 class AssetItem(PropertyGroup):
     """Clase para almacenar información de un asset individual"""
-    name: StringProperty(
-        name="Nombre",
-        description="Nombre del asset"
-    )
-    filepath: StringProperty(
-        name="Ruta del archivo",
-        description="Ruta al archivo .blend del asset"
-    )
-    asset_type: StringProperty(
-        name="Tipo de Asset",
-        description="Tipo del asset (mesh, material, etc.)",
-        default="UNKNOWN"
-    )
-    is_editing: BoolProperty(
-        name="Editando",
-        description="Indica si el asset está siendo editado",
-        default=False
-    )
-    edit_name: StringProperty(
-        name="Nombre en edición",
-        description="Nombre temporal durante la edición"
-    )
-    is_selected: BoolProperty(
-        name="Seleccionado",
-        description="Indica si el asset está seleccionado para operaciones en masa",
-        default=False
-    )
+    name: StringProperty(name="Nombre", description="Nombre del asset")
+    filepath: StringProperty(name="Ruta del archivo", description="Ruta al archivo .blend del asset")
+    asset_type: StringProperty(name="Tipo de Asset", description="Tipo del asset (mesh, material, etc.)", default="UNKNOWN")
+    is_editing: BoolProperty(name="Editando", description="Indica si el asset está siendo editado", default=False)
+    edit_name: StringProperty(name="Nombre en edición", description="Nombre temporal durante la edición")
+    is_selected: BoolProperty(name="Seleccionado", description="Indica si el asset está seleccionado para operaciones en masa", default=False)
 
 class ASSET_LIBRARY_Properties(PropertyGroup):
     """Clase principal para gestionar la biblioteca de assets"""
@@ -69,11 +46,7 @@ class ASSET_LIBRARY_Properties(PropertyGroup):
     
     assets: CollectionProperty(type=AssetItem)
     active_asset_index: IntProperty()
-    search_term: StringProperty(
-        name="Buscar",
-        description="Buscar assets por nombre",
-        default=""
-    )
+    search_term: StringProperty(name="Buscar", description="Buscar assets por nombre", default="")
     select_all: BoolProperty(
         name="Seleccionar Todo",
         description="Seleccionar/Deseleccionar todos los assets",
@@ -103,19 +76,8 @@ class ASSET_LIBRARY_Properties(PropertyGroup):
         default='RELATIVE'
     )
     
-    spacing: FloatProperty(
-        name="Spacing",
-        description="Espacio entre assets cuando se organizan en fila",
-        default=3.0,
-        min=0.0,
-        soft_max=10.0
-    )
-    
-    force_mode: BoolProperty(
-        name="Force Mode",
-        description="Sobrescribir materiales/modificadores existentes",
-        default=False
-    )
+    spacing: FloatProperty(name="Spacing", description="Espacio entre assets cuando se organizan en fila", default=3.0, min=0.0, soft_max=10.0)
+    force_mode: BoolProperty(name="Force Mode", description="Sobrescribir materiales/modificadores existentes", default=False)
     
     def update_all_selections(self, context):
         for asset in self.assets:
@@ -131,7 +93,6 @@ class ASSET_LIBRARY_Properties(PropertyGroup):
         try:
             for file in os.listdir(self.library_path):
                 if file.endswith(FILE_EXTENSION):
-                    # Filtrar por término de búsqueda
                     if self.search_term and self.search_term.lower() not in file.lower():
                         continue
                         
@@ -139,13 +100,11 @@ class ASSET_LIBRARY_Properties(PropertyGroup):
                     item.name = os.path.splitext(file)[0]
                     item.filepath = os.path.join(self.library_path, file)
                     
-                    # Detectar tipo de asset
                     try:
                         with bpy.data.libraries.load(item.filepath) as (data_from, data_to):
                             if data_from.materials:
                                 item.asset_type = "MATERIAL"
-                            elif any(mod.type == 'NODES' for obj in data_from.objects 
-                                   for mod in obj.modifiers):
+                            elif any(mod.type == 'NODES' for obj in data_from.objects for mod in obj.modifiers):
                                 item.asset_type = "NODES"
                             elif data_from.objects:
                                 item.asset_type = "MESH"
@@ -157,6 +116,103 @@ class ASSET_LIBRARY_Properties(PropertyGroup):
         except Exception as e:
             self.report({'ERROR'}, f"Error al cargar los assets: {str(e)}")
 
+class AssetManager:
+    """Clase para manejar operaciones comunes de assets"""
+    
+    @staticmethod
+    def save_asset(context, library_props):
+        """Guarda el objeto seleccionado como un asset en la biblioteca"""
+        if not library_props.library_path:
+            return {'CANCELLED', "Por favor seleccione una carpeta para la biblioteca"}
+        
+        if not os.path.exists(library_props.library_path):
+            try:
+                os.makedirs(library_props.library_path)
+            except Exception as e:
+                return {'CANCELLED', f"Error al crear la carpeta de la biblioteca: {str(e)}"}
+        
+        if not context.selected_objects:
+            return {'CANCELLED', "Por favor seleccione al menos un objeto para guardar"}
+        
+        if not context.active_object:
+            return {'CANCELLED', "Por favor seleccione un objeto activo"}
+        
+        asset_name = context.active_object.name
+        asset_filepath = os.path.join(library_props.library_path, asset_name + FILE_EXTENSION)
+        
+        try:
+            data_blocks = set()
+            selected_objects = context.selected_objects
+            min_co, max_co = AssetManager.calculate_bounds(selected_objects)
+            center = (min_co + max_co) / 2
+            positions = {obj.name: obj.matrix_world.translation - center for obj in selected_objects}
+            
+            for obj in selected_objects:
+                data_blocks.add(obj)
+                if obj.data:
+                    data_blocks.add(obj.data)
+                if hasattr(obj.data, "materials"):
+                    for mat_slot in obj.material_slots:
+                        mat = mat_slot.material
+                        if mat:
+                            data_blocks.add(mat)
+                            if mat.use_nodes and mat.node_tree:
+                                data_blocks.add(mat.node_tree)
+                                AssetManager.process_node_tree(mat.node_tree, data_blocks)
+                for mod in obj.modifiers:
+                    if mod.type == 'NODES' and mod.node_group:
+                        data_blocks.add(mod.node_group)
+                        AssetManager.process_node_tree(mod.node_group, data_blocks)
+            
+            for obj in selected_objects:
+                obj["relative_positions"] = str(positions)
+            
+            bpy.data.libraries.write(asset_filepath, data_blocks, fake_user=True, compress=True)
+            library_props.load_assets(context)
+            return {'FINISHED', f"Asset '{asset_name}' guardado correctamente"}
+        
+        except Exception as e:
+            return {'CANCELLED', f"Error al guardar el asset: {str(e)}"}
+    
+    @staticmethod
+    def calculate_bounds(selected_objects):
+        """Calcula los límites de los objetos seleccionados"""
+        min_co = Vector((float('inf'),) * 3)
+        max_co = Vector((float('-inf'),) * 3)
+        for obj in selected_objects:
+            if hasattr(obj, "bound_box"):
+                for v in obj.bound_box:
+                    world_co = obj.matrix_world @ Vector(v)
+                    min_co.x = min(min_co.x, world_co.x)
+                    min_co.y = min(min_co.y, world_co.y)
+                    min_co.z = min(min_co.z, world_co.z)
+                    max_co.x = max(max_co.x, world_co.x)
+                    max_co.y = max(max_co.y, world_co.y)
+                    max_co.z = max(max_co.z, world_co.z)
+            else:
+                world_co = obj.matrix_world.translation
+                min_co.x = min(min_co.x, world_co.x)
+                min_co.y = min(min_co.y, world_co.y)
+                min_co.z = min(min_co.z, world_co.z)
+                max_co.x = max(max_co.x, world_co.x)
+                max_co.y = max(max_co.y, world_co.y)
+                max_co.z = max(max_co.z, world_co.z)
+        return min_co, max_co
+    
+    @staticmethod
+    def process_node_tree(node_tree, data_blocks):
+        """Procesa un árbol de nodos y agrega los bloques de datos necesarios"""
+        if not node_tree:
+            return
+        for node in node_tree.nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                data_blocks.add(node.image)
+                if node.image.packed_file is None and node.image.filepath:
+                    node.image.pack()
+            if hasattr(node, "node_tree") and node.node_tree:
+                data_blocks.add(node.node_tree)
+                AssetManager.process_node_tree(node.node_tree, data_blocks)
+
 class ASSET_LIBRARY_OT_save_asset(Operator):
     """Guarda el objeto seleccionado como un asset en la biblioteca"""
     bl_idname = "asset.save_to_library"
@@ -167,159 +223,9 @@ class ASSET_LIBRARY_OT_save_asset(Operator):
     def execute(self, context):
         scene = context.scene
         library_props = scene.asset_library
-
-        if not library_props.library_path:
-            self.report({'ERROR'}, "Por favor seleccione una carpeta para la biblioteca")
-            return {'CANCELLED'}
-
-        if not os.path.exists(library_props.library_path):
-            try:
-                os.makedirs(library_props.library_path)
-            except Exception as e:
-                self.report({'ERROR'}, f"Error al crear la carpeta de la biblioteca: {str(e)}")
-                return {'CANCELLED'}
-
-        if not context.selected_objects:
-            self.report({'ERROR'}, "Por favor seleccione al menos un objeto para guardar")
-            return {'CANCELLED'}
-
-        if not context.active_object:
-            self.report({'ERROR'}, "Por favor seleccione un objeto activo")
-            return {'CANCELLED'}
-
-        asset_name = context.active_object.name
-        asset_filepath = os.path.join(library_props.library_path, asset_name + FILE_EXTENSION)
-
-        try:
-            # Recolectar datos a guardar
-            data_blocks = set()
-            
-            # Calcular el centro del grupo
-            selected_objects = context.selected_objects
-            if not selected_objects:
-                self.report({'ERROR'}, "Por favor seleccione al menos un objeto")
-                return {'CANCELLED'}
-                
-            # Calcular centro usando bounds
-            min_co = Vector((float('inf'),) * 3)
-            max_co = Vector((float('-inf'),) * 3)
-            for obj in selected_objects:
-                if hasattr(obj, "bound_box"):
-                    for v in obj.bound_box:
-                        world_co = obj.matrix_world @ Vector(v)
-                        min_co.x = min(min_co.x, world_co.x)
-                        min_co.y = min(min_co.y, world_co.y)
-                        min_co.z = min(min_co.z, world_co.z)
-                        max_co.x = max(max_co.x, world_co.x)
-                        max_co.y = max(max_co.y, world_co.y)
-                        max_co.z = max(max_co.z, world_co.z)
-                else:
-                    # Para objetos sin bound_box, usar la ubicación del objeto
-                    world_co = obj.matrix_world.translation
-                    min_co.x = min(min_co.x, world_co.x)
-                    min_co.y = min(min_co.y, world_co.y)
-                    min_co.z = min(min_co.z, world_co.z)
-                    max_co.x = max(max_co.x, world_co.x)
-                    max_co.y = max(max_co.y, world_co.y)
-                    max_co.z = max(max_co.z, world_co.z)
-            
-            center = (min_co + max_co) / 2
-            
-            # Guardar las posiciones relativas al centro
-            positions = {}
-            for obj in selected_objects:
-                positions[obj.name] = obj.matrix_world.translation - center
-            
-            def process_node_tree(node_tree):
-                if not node_tree:
-                    return
-                for node in node_tree.nodes:
-                    if node.type == 'TEX_IMAGE' and node.image:
-                        data_blocks.add(node.image)
-                        if node.image.packed_file is None and node.image.filepath:
-                            node.image.pack()
-                    
-                    if hasattr(node, "node_tree") and node.node_tree:
-                        data_blocks.add(node.node_tree)
-                        process_node_tree(node.node_tree)
-
-            # Agregar objetos seleccionados y sus datos
-            for obj in selected_objects:
-                data_blocks.add(obj)
-                
-                # Agregar datos del objeto (mesh, curve, gpencil data, etc)
-                if obj.data:
-                    data_blocks.add(obj.data)
-                
-                # Agregar materiales
-                if hasattr(obj.data, "materials"):
-                    for mat_slot in obj.material_slots:
-                        mat = mat_slot.material
-                        if mat:
-                            data_blocks.add(mat)
-                            if mat.use_nodes and mat.node_tree:
-                                data_blocks.add(mat.node_tree)
-                                process_node_tree(mat.node_tree)
-                
-                # Agregar modificadores
-                for mod in obj.modifiers:
-                    # Geometry Nodes
-                    if mod.type == 'NODES' and mod.node_group:
-                        data_blocks.add(mod.node_group)
-                        process_node_tree(mod.node_group)
-                        
-                        for node in mod.node_group.nodes:
-                            if node.type == 'GROUP_INPUT':
-                                for socket in node.outputs:
-                                    if hasattr(socket, "default_value"):
-                                        if isinstance(socket.default_value, bpy.types.Material):
-                                            data_blocks.add(socket.default_value)
-                                            if socket.default_value.use_nodes and socket.default_value.node_tree:
-                                                data_blocks.add(socket.default_value.node_tree)
-                                                process_node_tree(socket.default_value.node_tree)
-                    
-                    # Otros tipos de modificadores que puedan tener datos
-                    elif hasattr(mod, "object") and mod.object:
-                        data_blocks.add(mod.object)
-                        if mod.object.data:
-                            data_blocks.add(mod.object.data)
-                
-                # Guardar datos específicos según el tipo de objeto
-                if obj.type == 'GPENCIL':
-                    # Guardar materiales de Grease Pencil
-                    for material in obj.data.materials:
-                        if material:
-                            data_blocks.add(material)
-                
-                elif obj.type == 'CURVE':
-                    # Guardar objetos de taper y bevel si existen
-                    if obj.data.bevel_object:
-                        data_blocks.add(obj.data.bevel_object)
-                        if obj.data.bevel_object.data:
-                            data_blocks.add(obj.data.bevel_object.data)
-                    if obj.data.taper_object:
-                        data_blocks.add(obj.data.taper_object)
-                        if obj.data.taper_object.data:
-                            data_blocks.add(obj.data.taper_object.data)
-            
-            # Guardar las posiciones relativas como una propiedad personalizada
-            for obj in selected_objects:
-                obj["relative_positions"] = str(positions)
-            
-            bpy.data.libraries.write(
-                asset_filepath,
-                data_blocks,
-                fake_user=True,
-                compress=True
-            )
-
-            library_props.load_assets(context)
-            self.report({'INFO'}, f"Asset '{asset_name}' guardado correctamente")
-            return {'FINISHED'}
-
-        except Exception as e:
-            self.report({'ERROR'}, f"Error al guardar el asset: {str(e)}")
-            return {'CANCELLED'}
+        result, message = AssetManager.save_asset(context, library_props)
+        self.report(result, message)
+        return result
 
 class ASSET_LIBRARY_OT_load_asset(Operator):
     """Carga los assets seleccionados en la escena actual"""
@@ -357,7 +263,6 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                 loaded_objects = []
                 relative_positions = {}
                 
-                # Cargar posiciones relativas si existen
                 for obj in data_to.objects:
                     if obj is not None and "relative_positions" in obj:
                         try:
@@ -372,7 +277,6 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                             scene.collection.objects.link(obj)
                             loaded_objects.append(obj)
                             
-                            # Aplicar posición según el modo de organización
                             if library_props.arrange_mode == 'RELATIVE' and relative_positions:
                                 if obj.name in relative_positions:
                                     rel_pos = relative_positions[obj.name]
@@ -390,23 +294,18 @@ class ASSET_LIBRARY_OT_load_asset(Operator):
                         if library_props.load_mode == 'MATERIAL':
                             for target_obj in context.selected_objects:
                                 if hasattr(target_obj.data, "materials"):
-                                    # Limpiar materiales existentes si está en modo forzado
                                     if library_props.force_mode:
                                         while len(target_obj.data.materials):
                                             target_obj.data.materials.pop()
                                     
-                                    # Agregar nuevos materiales
                                     for mat in data_to.materials:
                                         if mat is not None and isinstance(mat, bpy.types.Material):
-                                            # Si el material ya existe en el objeto y no estamos en modo forzado, saltarlo
                                             if not library_props.force_mode and mat.name in target_obj.data.materials:
                                                 continue
                                             
-                                            # Asegurarse de que el material use nodos
                                             if not mat.use_nodes:
                                                 mat.use_nodes = True
                                             
-                                            # Agregar el material al objeto
                                             target_obj.data.materials.append(mat)
 
                         if library_props.load_mode == 'NODES':
@@ -470,11 +369,8 @@ class ASSET_LIBRARY_UL_items(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             row = layout.row(align=True)
-            
-            # Checkbox de selección
             row.prop(item, "is_selected", text="")
             
-            # Detectar tipo de asset y mostrar icono apropiado
             icon_name = 'OBJECT_DATA'
             try:
                 with bpy.data.libraries.load(item.filepath) as (data_from, _):
@@ -485,10 +381,8 @@ class ASSET_LIBRARY_UL_items(UIList):
             except:
                 pass
             
-            # Nombre del asset
             row.label(text=item.name, icon=icon_name)
             
-            # Botón de eliminación
             op = row.operator("asset.delete_from_library", text="", icon='TRASH', emboss=False)
             if op:
                 op.asset_name = item.name
@@ -510,31 +404,25 @@ class ASSET_LIBRARY_PT_main(Panel):
         scene = context.scene
         library_props = scene.asset_library
 
-        # Carpeta de la biblioteca
         row = layout.row()
         row.prop(library_props, "library_path", text="")
         
-        # Búsqueda y controles
         row = layout.row(align=True)
         row.prop(library_props, "search_term", text="", icon='VIEWZOOM')
         row.operator("asset.refresh_library", text="", icon='FILE_REFRESH')
         
-        # Checkbox global y botón de eliminar
         row = layout.row(align=True)
         row.prop(library_props, "select_all", text="Seleccionar Todo")
         row.operator("asset.delete_selected", text="", icon='TRASH')
         
-        # Lista de assets
         row = layout.row()
         row.template_list("ASSET_LIBRARY_UL_items", "", library_props, "assets", library_props, "active_asset_index")
 
-        # Controles de guardado
         box = layout.box()
         box.label(text="Guardar Asset")
         row = box.row()
         row.operator("asset.save_to_library", text="Guardar Seleccionado", icon='EXPORT')
 
-        # Controles de carga
         box = layout.box()
         box.label(text="Cargar Asset")
         
@@ -586,7 +474,6 @@ class ASSET_LIBRARY_OT_delete_selected(Operator):
         deleted_count = 0
         
         try:
-            # Crear una lista de assets a eliminar
             assets_to_delete = [asset for asset in library_props.assets if asset.is_selected]
             
             for asset in assets_to_delete:
@@ -594,7 +481,6 @@ class ASSET_LIBRARY_OT_delete_selected(Operator):
                     os.remove(asset.filepath)
                     deleted_count += 1
             
-            # Actualizar la lista
             library_props.load_assets(context)
             
             if deleted_count > 0:
